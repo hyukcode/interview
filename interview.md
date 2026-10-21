@@ -71,8 +71,28 @@ Timeout -> retry
   event  events/t1.events.jsonl 
 
 
+整体认知
 Tasker解决什么问题
-Agent 任务执行框架
+Agent 任务执行框架 管理任务、管理执行过程、管理失败恢复的运行时系统
+负责“这一步什么时候执行、执行失败怎么办、结果保存在哪里、重启后怎么继续”
+
+1. Planner: 任务规划 LLM理解需求，生成任务列表和依赖关系
+2. Validator: 计划校验 检查任务格式、依赖是否存在、DAG是否有环
+3. Scheduler: 任务调度 判断哪些任务可以并行，哪些必须等待
+4. Executor: 调用 Claude Code 、Codex 或其他并行器
+5. Context: 传递依赖任务结果和必要上下文
+6. Runtime: 执行治理 并发控制、重试、幂等、超时、错误分类
+7. Checkpoint: 持久化与恢复 记录状态、执行进度和结果，支持故障恢复
+
+能拆任务，怎么保证拆出来的任务依赖正确？
+
+能并行，怎么避免两个 Agent 同时修改同一个文件？
+
+失败能重试，怎么避免重复执行副作用？
+
+能恢复，进程崩溃时最后一步执行成功但结果没保存怎么办？
+
+
 多agent
 一个任务拆成多个可管理的小任务，控制这些任务如何执行
 Planner 负责制定任务计划的部分
@@ -96,13 +116,21 @@ Planner不等于Scheduler，Planner决定应该做什么，Scheduler决定现在
  class Task:
 	id: str
 	description: str
-	depends_on: list[str] = field(default_factory=list) 为每个实例创建自己的新列表
+	depends_on: list[str] = field(default_factory=list) 
+	<!-- 为每个实例创建自己的新列表 -->
 	status: str = “pending”
 
 真实 Runtime 需要处理 中断、取消、重试中、状态未知等情况
 
-DAG 校验函数
-目标 检查任务ID是否重复，检查依赖的任务是否存在，检查是否有循环依赖，如果没有环返回一个合法的拓扑顺序
+DAG:
+校验函数
+目标:
+检查任务ID是否重复，
+检查依赖的任务是否存在，
+检查是否有循环依赖，如果没有环返回一个合法的拓扑顺序
+
+  <!-- O(V+E) -->
+  from collections import defaultdict, deque
 
   def  topological_sort(tasks):
 	task_map = {} # 1. 建立任务 ID 到任务对象的映射
@@ -111,7 +139,7 @@ DAG 校验函数
 			raise ValueError(f”duplicate task id: {task.id}")
 		task_map[task.id] = task
 	
-	# 2. 初始化每个任务的入度
+	# 2. 初始化每个任务的入度, 多少个直接前置依赖没有被消除
 	
 	indegree = {
 		task_id: 0
@@ -120,17 +148,22 @@ DAG 校验函数
 
 	# 3. 建立依赖图
 	
+	<!-- 前置任务指向后续任务，当前任务完成后，哪些任务因此变得可执行 -->
 	graph = defaultdict(list)
 	for task in tasks:
 		for dep_id in task.depends_on:
 			if dep_id not in task_map:
 				raise ValueError(f"unknown dependency: {dep_id}”)
+
+			graph[dep].append(task_id)
+			indegree[task_id] += 1
 	
 	
 	
 
 	# 4. 把所有入度为 0 的任务放进队列
 	
+	<!-- 高效取队头元素 -->
 	queue = deque(
 		task_id
 		for task_id, degree in indegree.items()
@@ -144,7 +177,6 @@ DAG 校验函数
 	while queue:
 		current = queue.popleft()
 		order.append(current)
-#graph的数据结构
 		for next_task in graph[current]:
 			indegree[next_task]-=1
 			if indegree[next_task] == 0:
@@ -172,16 +204,42 @@ DAG 校验函数
 
 面试时怎么介绍 Tasker？
 可以按这个结构回答：
-我做的 Tasker 定位是一个面向 Agent 任务的执行框架，核心目标是把 LLM 的任务规划和实际执行治理解耦。
-在规划阶段，由模型把复杂需求拆解成任务及其依赖关系。调度层负责校验依赖图，并根据依赖关系决定任务的执行顺序和并发机会。
+Tasker 定位是一个面向 Agent 任务的执行框架，
+核心目标是把 LLM 的任务规划和实际执行治理解耦。
+在规划阶段，由模型把复杂需求拆解成任务及其依赖关系。
+调度层负责校验依赖图，并根据依赖关系决定任务的执行顺序和并发机会。
 执行层通过统一的 Executor 接口接入不同的执行器，例如 Claude 和 Codex。运行时则需要管理任务状态、重试、幂等、上下文传递以及执行过程中的异常。
 为了应对长任务和进程故障，还需要把执行状态与关键进度持久化，让系统能够判断哪些任务已经完成、哪些需要恢复，以及哪些必须先检查副作用再决定是否重试。
 
 可能深挖
-为什么不直接用一个 LLM 循环调用工具？ 简单任务可以。但复杂任务需要显式依赖、并发控制、状态持久化和恢复能力，不能只依赖对话历史。
+为什么不直接用一个 LLM 循环调用工具？ 
+简单任务可以。但复杂任务需要显式依赖、并发控制、状态持久化和恢复能力，不能只依赖对话历史。
 Planner 和 Scheduler 有什么区别？ Planner 决定做哪些任务以及任务之间的逻辑关系；Scheduler 决定在当前状态下哪些任务可以执行。
 DAG 排序是不是任务执行？ 不是。排序只解决依赖顺序，真正执行还需要状态管理、执行器调用、错误处理和结果持久化。
-所有任务都必须交给 LLM 规划吗？ 不必。固定、稳定的业务流程可以使用确定性工作流；只有需要推理或动态拆解的部分才交给模型。
+所有任务都必须交给 LLM 规划吗？ 
+不必。固定、稳定的业务流程可以使用确定性工作流；只有需要推理或动态拆解的部分才交给模型。
+
+async def 定义一个递归函数，调用得到一个协程对象，协程需要通过await或事件循环驱动才能运行
+
+Multi-agent 需要处理：
+模型API的调用与超时
+每个Agent的系统提示词和工具权限
+输入输出结构校验
+上下文预算
+执行失败与重试
+中间结果持久化
+人工审批和安全边界
+
+Multi-agent 成本：
+每增加一个agent会增加
+模型调用次数和Token成本
+Agent之间传递上下文的成本
+结果不一致、重复劳动和协调失败的概率
+调度、追踪和故障恢复的复杂度
+
+需要比较 并行收益 + 专业分工收益 /  协调成本 + 模型成本 + 故障成本
+
+
 
 
 
