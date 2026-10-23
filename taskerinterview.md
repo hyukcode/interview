@@ -239,6 +239,57 @@ Agent之间传递上下文的成本
 
 需要比较 并行收益 + 专业分工收益 /  协调成本 + 模型成本 + 故障成本
 
+多Agent VS 多Tool
+Tool是执行某种能力的接口，如查询数据库、读取文件或运行命令
+Agent承担目标理解、任务决策、多步执行职责
+
+Single-Agent
+任务简单、依赖紧密、并行收益低
+或 多Agent的协调成本超过收益，单Agent通常更简单、更可靠
+
+如何证明Multi-Agent有价值
+用相同的任务集比较单Agent和多Agent的完成率、耗时、Token成本、人工介入次数和错误率
+
+LLM把任务拆错了，怎么办？
+LLM输出不直接成为执行命令，是可能出错的规划组件
+可能生成：
+不存在的依赖任务
+重复的任务ID 
+循环依赖
+任务顺序不合理
+描述不完整的任务
+不符合预期的数据结构
+
+合理的流程：
+LLM 生成计划 -> 解析结构化输出 -> 检查字段和类型 -> 检查任务依赖 -> 检查DAG
+-> 合法才执行 -> 不合法时尝试修复，超过上限则停止
+
+中断后为什么能继续？
+Agent长任务不能只持久化聊天信息，更重要的是持久化执行状态
+Runtime状态
+Session
+-goal
+-plan
+-task runs
+-status
+Event events/xxx
+Task Result
+<!-- 局部恢复 简写 -->
+def descendants(graph, start):
+	result = set()
+	stack = [start]
+	while stack:
+		node = stack.pop()
+		if node in result:
+			continue
+		result.add(node)
+		for nxt in graph[node]:
+			stack.append(nxt)
+	return result
+
+
+
+
 
 
 
